@@ -1,0 +1,284 @@
+<meta charset=utf-8>
+<script>
+stop = false;
+function note2freq(note) {
+  return Math.pow(2, (note - 69) / 12) * 440;
+}
+
+var track = {
+  tempo: 131,
+  tracks: {
+   Kick: [ 1, 0, 0, 0, 1, 0, 0, 0,
+           1, 0, 0, 0, 1, 0, 0, 0,
+           1, 0, 0, 0, 1, 0, 0, 0,
+           1, 0, 0, 0, 1, 0, 0, 0,
+           1, 0, 0, 0, 1, 0, 0, 0,
+           1, 0, 0, 0, 1, 0, 0, 0,
+           1, 0, 0, 0, 1, 0, 0, 0,
+           1, 0, 0, 0, 1, 0, 1, 0],
+   Hats: [ 0, 0, 1, 0, 0, 0, 1, 0,
+           0, 0, 1, 0, 0, 0, 1, 0,
+           0, 0, 1, 0, 0, 0, 1, 0,
+           0, 0, 1, 0, 0, 0, 1, 0,
+           0, 0, 1, 0, 0, 0, 1, 0,
+           0, 0, 1, 0, 0, 0, 1, 0,
+           0, 0, 1, 0, 0, 0, 1, 0,
+           0, 0, 1, 0, 1, 0, 1, 1 ],
+   Clap: [ 0, 0, 0, 0, 0, 0, 0, 0,
+           0, 0, 0, 1, 0, 0, 0, 0,
+           0, 0, 0, 0, 0, 0, 0, 0,
+           0, 0, 0, 0, 0, 0, 0, 0,
+           0, 0, 0, 0, 0, 0, 0, 0,
+           0, 0, 0, 1, 0, 0, 0, 0,
+           0, 0, 0, 0, 0, 0, 0, 0,
+           0, 0, 0, 0, 1, 0, 1, 1],
+   Bass: [ 0, 0, 24, 0, 0, 0, 0, 24,
+           0, 0, 24, 0, 0, 0, 0, 24,
+           0, 0, 24, 0, 0, 0, 0, 22,
+           0, 0, 24, 0, 0, 0, 0, 24,
+           0, 0, 26, 0, 0, 0, 0, 26,
+           0, 0, 26, 0, 0, 0, 0, 27,
+           0, 0, 26, 0, 0, 0, 0, 26,
+           0, 0, 26, 0, 0, 0, 0, 26,]
+  }
+};
+
+function S(ac, impulse, track) {
+  this.ac = ac;
+  this.track = track;
+
+  this.sink = ac.createGain();
+
+  var verb = ac.createConvolver();
+  verb.buffer = impulse;
+
+  var mixverb = ac.createGain();
+  mixverb.gain.value = 1.0;
+  mixverb.connect(verb);
+
+  // High pass at 3kHz
+  var hpf = this.ac.createBiquadFilter();
+  hpf.type = "highpass";
+  hpf.frequency.value = 3000;
+
+  // Ping pong delay
+  var feedback = this.ac.createGain();
+  var leftDelay = this.ac.createDelay();
+  var rightDelay = this.ac.createDelay();
+
+  var delayTime = (60 / this.track.tempo) / 4 * 3;
+
+  leftDelay.delayTime.value = delayTime;
+  rightDelay.delayTime.value = delayTime;
+  feedback.gain.value = 0.2;
+
+  hpf.connect(feedback);
+  leftDelay.connect(rightDelay);
+  feedback.connect(leftDelay);
+  rightDelay.connect(feedback);
+
+  var merger = this.ac.createChannelMerger(2);
+  leftDelay.connect(merger, 0, 0);
+  rightDelay.connect(merger, 0, 1);
+
+  // Connection to master
+  merger.connect(ac.destination);
+  verb.connect(ac.destination);
+  this.sink.connect(ac.destination);
+
+  // Sink to sends
+  this.sink.connect(hpf);
+  this.sink.connect(mixverb);
+}
+
+S.prototype.NoiseBuffer = function() {
+  if (!S._NoiseBuffer) {
+    S._NoiseBuffer =
+      this.ac.createBuffer(1,
+                           this.ac.sampleRate,
+                           this.ac.sampleRate);
+    var cd = S._NoiseBuffer.getChannelData(0);
+    for (var i = 0; i < cd.length; i++) {
+      cd[i] = Math.random() * 2 - 1;
+    }
+  }
+  return S._NoiseBuffer;
+}
+
+// time is in fractional beat
+S.prototype.clock = function() {
+  var beatLen = 60 / this.track.tempo;
+  return (this.ac.currentTime - this.startTime) / beatLen;
+}
+
+// starts the tune
+S.prototype.start = function() {
+  this.startTime = this.ac.currentTime;
+  this.nextScheduling = 0;
+  this.scheduler();
+}
+
+S.prototype.scheduler = function() {
+  var beatLen = 60 / this.track.tempo;
+
+  var lookahead = 0.5;
+
+  if (stop) {
+    return;
+  }
+
+  if (this.clock() + lookahead > this.nextScheduling) {
+    var steps = [];
+    steps.push(this.nextScheduling + beatLen / 4);
+
+    for (var i in this.track.tracks) {
+      for (var j = 0; j < steps.length; j++) {
+        var idx = Math.round(steps[j] / ((beatLen / 4)));
+
+        var note = this.track.tracks[i][idx % this.track.tracks[i].length];
+
+        if (note != 0) {
+          this[i](steps[j], note);
+        }
+      }
+    }
+
+    this.nextScheduling += (60 / this.track.tempo / 4);
+  }
+
+  setTimeout(this.scheduler.bind(this), 15);
+}
+
+S.prototype.Kick = function(t) {
+  var osc_sine = this.ac.createOscillator();
+  var gain_sine = this.ac.createGain();
+  var osc_square = this.ac.createOscillator();
+  var gain_square = this.ac.createGain();
+
+  osc_sine.type = "sine";
+  osc_square.type = "square";
+
+  osc_square.frequency.value = "40";
+
+  osc_sine.connect(gain_sine).connect(this.sink);
+  osc_square.connect(gain_square).connect(this.sink);
+
+  osc_sine.frequency.setValueAtTime(100, t);
+  osc_sine.frequency.setTargetAtTime(40, t, 0.05);
+
+  gain_sine.gain.setValueAtTime(1.0, t);
+  gain_sine.gain.setTargetAtTime(0.0, t, 0.2);
+
+  gain_square.gain.setValueAtTime(0.7, t);
+  gain_square.gain.setTargetAtTime(0.0, t, 0.003);
+
+  osc_sine.start(t);
+  osc_sine.stop(t + 1.0);
+  osc_square.start(t);
+  osc_square.stop(t + 1.0);
+}
+
+S.prototype.Hats = function(t) {
+  var s = ac.createBufferSource();
+  s.buffer = this.NoiseBuffer();
+
+  var gain = ac.createGain();
+  var hpf = ac.createBiquadFilter();
+
+  hpf.type = "highpass";
+  hpf.frequency.value = 5000;
+
+  gain.gain.setValueAtTime(0.6, t);
+  gain.gain.setTargetAtTime(0.0, t, 0.03);
+
+  s.connect(gain).connect(hpf).connect(this.sink);
+
+  s.start(t);
+}
+
+S.prototype.Clap = function(t) {
+  var noise = this.ac.createBufferSource();
+  var env = this.ac.createGain();
+  var env1 = this.ac.createGain();
+  var tap0 = this.ac.createDelay();
+  var tap1 = this.ac.createDelay();
+  var bandpass = this.ac.createBiquadFilter();
+
+  bandpass.type = "bandpass";
+  bandpass.frequency.value = 1800;
+  bandpass.Q.value = 0.4;
+
+  noise.buffer = this.NoiseBuffer();
+
+  tap0.delayTime.value = 0.010 * 1.5;
+  tap1.delayTime.value = 0.023 * 1.5;
+
+  bandpass.connect(this.sink);
+
+  noise.connect(env).connect(bandpass);
+  noise.connect(env).connect(tap0).connect(bandpass);
+  noise.connect(env1).connect(tap1).connect(bandpass);
+
+  env.gain.setValueAtTime(0.6, t);
+  env.gain.setTargetAtTime(0.0, t, 0.003);
+
+  env1.gain.setValueAtTime(0.3, t);
+  env1.gain.setTargetAtTime(0.0, t, 0.050);
+
+  noise.start(t);
+}
+
+S.prototype.Bass = function(t, note) {
+  var osc1 = this.ac.createOscillator();
+  var osc2 = this.ac.createOscillator();
+  var gain = this.ac.createGain();
+  var filter = this.ac.createBiquadFilter();
+
+  osc1.connect(filter).connect(gain).connect(this.sink);
+  osc2.connect(filter);
+
+  osc1.frequency.setValueAtTime(note2freq(note), t);
+  osc2.frequency.setValueAtTime(note2freq(note), t);
+
+  osc2.detune.value = 12;
+
+  osc1.type = "triangle";
+  osc2.type = "triangle";
+
+  gain.gain.setValueAtTime(0.8, t);
+  gain.gain.setTargetAtTime(0.0, t, 0.3);
+
+  filter.Q.setValueAtTime(10, t);
+
+  filter.frequency.setValueAtTime(500, t);
+  filter.frequency.setTargetAtTime(100, t, 0.05);
+
+  filter.type = "lowpass";
+
+  osc1.start(t);
+  osc2.start(t);
+  osc1.stop(t+1);
+  osc2.stop(t+1);
+}
+
+window.onload = function() {
+  fetch("impulse.wav").then((response) => {
+      response.arrayBuffer().then((arrayBuffer) => {
+          ac = new AudioContext();
+          ac.decodeAudioData(arrayBuffer).then((impulse) => {
+              var s = new S(ac, impulse, track);
+              s.start();
+              });
+          })
+      });
+
+  document.querySelector("button").onclick = () => {
+    stop = true;
+    ac.close();
+  }
+}
+
+</script>
+<button>
+  Stop !
+</button>
